@@ -1,32 +1,32 @@
 plugins {
-    id 'fabric-loom'
+    id 'java-library'
     id 'maven-publish'
-    id 'idea'
+    id 'net.neoforged.gradle.userdev' version '7.1.25'
 }
 
+// 1. 补全读取 Git Commit Hash 的方法
 static def getCheckedOutGitCommitHash(Project mcefParent) {
     def gitFolder = "$mcefParent.projectDir/.git/modules/java-cef/"
     def takeFromHash = 40
-    /*
-     * '.git/HEAD' contains either
-     *      in case of detached head: the currently checked out commit hash
-     *      otherwise: a reference to a file containing the current commit hash
-     */
     def gitHeadFile = new File(gitFolder + "HEAD")
     if (gitHeadFile.exists()) {
-        def head = gitHeadFile.text.split(":") // .git/HEAD
-        def isCommit = head.length == 1 // e5a7c79edabbf7dd39888442df081b1c9d8e88fd
-        // def isRef = head.length > 1     // ref: refs/heads/master
+        def head = gitHeadFile.text.split(":")
+        def isCommit = head.length == 1
 
-        if (isCommit) return head[0].trim().take(takeFromHash) // e5a7c79edabb
+        if (isCommit) return head[0].trim().take(takeFromHash)
 
-        def refHead = new File(gitFolder + head[1].trim()) // .git/refs/heads/master
-        refHead.text.trim().take takeFromHash
+        def refHead = new File(gitFolder + head[1].trim())
+        if (refHead.exists()) {
+            return refHead.text.trim().take(takeFromHash)
+        } else {
+            return ""
+        }
     } else {
         return ""
     }
 }
 
+// 注册 JCEF 相关的构建和克隆任务
 tasks.register('cloneJcef', Exec) {
     commandLine 'git', 'submodule', 'update', '--init', '--recursive', 'java-cef'
 }
@@ -35,35 +35,22 @@ tasks.register('generateJcefCommitFile') {
     doLast {
         def commitHash = getCheckedOutGitCommitHash(project)
         if (!commitHash.isEmpty()) {
-            file("$buildDir/jcef.commit").text = commitHash
+            // 使用标准的 Gradle 路径 API 获取文件
+            layout.buildDirectory.file("jcef.commit").get().asFile.text = commitHash
         } else {
             throw new GradleException("Unable to determine JCEF commit hash.")
         }
     }
 }
 
-version = project.mod_version
-group = project.maven_group
-
-base {
-    archivesName = project.archives_base_name
+tasks.named('wrapper', Wrapper).configure {
+    distributionType = Wrapper.DistributionType.BIN
 }
 
-repositories {
-    mavenCentral()
-    mavenLocal()
-    maven { url = 'https://maven.fabricmc.net/' }
-}
+version = mod_version
+group = mod_group_id
 
-dependencies {
-    minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings loom.officialMojangMappings()
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-
-    implementation "com.squareup.okhttp3:okhttp:4.12.0"
-    implementation "org.lwjgl:lwjgl-egl:3.3.3"
-}
-
+// 2. 修复 SourceSets 结构：将 jcef 移出 resources，并正确关联到 main 的 classpath
 sourceSets {
     jcef {
         java {
@@ -71,94 +58,122 @@ sourceSets {
             exclude "**/tests/**"
         }
     }
-
     main {
+        resources {
+            srcDir('src/generated/resources')
+            exclude("**/*.bbmodel")
+            exclude("src/generated/**/.cache")
+        }
         compileClasspath += jcef.output
         runtimeClasspath += jcef.output
     }
 }
 
-processResources {
-    filesMatching('fabric.mod.json') {
-        expand 'mod_id': mod_id,
-                'mod_name': mod_name,
-                'mod_vendor': mod_vendor,
-                'mod_version': mod_version,
-                'minecraft_version': minecraft_version,
-                'loader_version': loader_version
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+    maven { url 'https://cursemaven.com' }
+}
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+runs {
+    configureEach {
+        systemProperty 'forge.logging.markers', 'REGISTRIES'
+        systemProperty 'forge.logging.console.level', 'debug'
+        workingDirectory project.layout.projectDirectory.dir('run').dir(name)
+        modSource project.sourceSets.main
     }
 
-    inputs.property "version", project.version
+    client {
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+    }
 
-    dependsOn processJcefResources
+    server {
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        argument '--nogui'
+    }
+
+    gameTestServer {
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+    }
+
+    clientData {
+        arguments.addAll '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+    }
+}
+
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+}
+
+dependencies {
+    implementation "net.neoforged:neoforge:${neo_version}"
+
+    implementation 'org.json:json:20251224'
+    jarJar 'org.json:json:20251224'
+
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    implementation "org.lwjgl:lwjgl-egl:3.3.3"
+
+    // 3. 移除 `implementation project(':java-cef')`
+    // 因为我们已经在 sourceSets 里面以独立编译集的方式包含了 JCEF
+}
+
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            'java-cef-commit'      : getCheckedOutGitCommitHash(project)
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand replaceProperties
+    }
+
     dependsOn generateJcefCommitFile
 }
 
-
-tasks.withType(JavaCompile).configureEach {
-    it.options.release = 21
-}
-
-jar {
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    manifest {
-        attributes(['Specification-Title'     : archives_base_name,
-                    'Specification-Vendor'    : group,
-                    'Specification-Version'   : "1",
-                    'Implementation-Title'    : archives_base_name,
-                    'Implementation-Version'  : mod_version,
-                    'Implementation-Vendor'   : group,
-                    'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
-                    'java-cef-commit'         : getCheckedOutGitCommitHash(project)
-        ])
-    }
+// 4. 确保在最终生成的 jar 包中包含 JCEF 编译后的内容
+tasks.named('jar', Jar).configure {
     from sourceSets.jcef.output.classesDirs
     from sourceSets.jcef.output.resourcesDir
-    from("LICENSE") {
-        rename { "${it}_${project.base.archivesName.get()}"}
-    }
-    from("$buildDir/jcef.commit")
-    from sourceSets.jcef.output
-}
-
-java {
-    // Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
-    // if it is present.
-    // If you remove this line, sources will not be generated.
-    withSourcesJar()
-
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-}
-
-idea {
-    module {
-        excludeDirs += file("java-cef/java/tests")
-        inheritOutputDirs true
-    }
+    // 直接传入 Gradle 文件对象，无需转换为绝对路径字符串
+    from layout.buildDirectory.file("jcef.commit")
 }
 
 publishing {
     publications {
-        mavenJava(MavenPublication) {
+        register('mavenJava', MavenPublication) {
             from components.java
         }
     }
-
     repositories {
         maven {
-            name = "ccbluex-maven"
-            def isSnapshot = version.toString().endsWith("-SNAPSHOT")
-            url = isSnapshot ? uri("https://maven.ccbluex.net/snapshots") : uri("https://maven.ccbluex.net/releases")
-            credentials {
-                username = System.getenv("MAVEN_TOKEN_NAME")
-                password = System.getenv("MAVEN_TOKEN_SECRET")
-            }
-            authentication {
-                basic(BasicAuthentication)
-            }
+            url "file://${project.projectDir}/repo"
         }
     }
 }
 
-group = 'net.ccbluex'
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+        excludeDirs += file("java-cef/java/tests")
+    }
+}
