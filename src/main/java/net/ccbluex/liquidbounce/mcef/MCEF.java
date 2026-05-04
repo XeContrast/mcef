@@ -56,13 +56,6 @@ public class MCEF {
 
     public static final Minecraft mc = Minecraft.getInstance();
 
-    public MCEF(IEventBus modEventBus) {
-        // 在构造函数中触发初始化，或监听 FMLClientSetupEvent
-        this.initialize();
-    }
-
-    private MCEF() {}
-
     /**
      * Get access to various settings for MCEF.
      * @return Returns the existing {@link MCEFSettings} or creates a new {@link MCEFSettings} and loads from disk (blocking)
