@@ -23,6 +23,8 @@ package net.ccbluex.liquidbounce.mcef;
 
 import net.ccbluex.liquidbounce.mcef.cef.*;
 import net.minecraft.client.Minecraft;
+import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.common.Mod;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -36,10 +38,11 @@ import java.io.InputStreamReader;
  * An API to create Chromium web browsers in Minecraft. Uses
  * a modified version of java-cef (Java Chromium Embedded Framework).
  */
-@NullMarked
-public enum MCEF {
+@Mod("mcef")
+public class MCEF {
 
-    INSTANCE;
+    public static final String MOD_ID = "mcef";
+    public static final MCEF INSTANCE = new MCEF();
 
     public final Logger LOGGER = LoggerFactory.getLogger("MCEF");
     private @Nullable MCEFSettings settings;
@@ -52,6 +55,13 @@ public enum MCEF {
     }
 
     public static final Minecraft mc = Minecraft.getInstance();
+
+    public MCEF(IEventBus modEventBus) {
+        // 在构造函数中触发初始化，或监听 FMLClientSetupEvent
+        this.initialize();
+    }
+
+    private MCEF() {}
 
     /**
      * Get access to various settings for MCEF.
